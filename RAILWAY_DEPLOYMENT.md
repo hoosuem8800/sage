@@ -14,9 +14,9 @@ This document provides the steps to deploy the Chest X-ray Classification API to
    - Connect and select your GitHub repository
 
 3. **Configure the Deployment**
-   - Make sure Railway uses the Dockerfile in the DL_model directory
-   - Set the working directory to DL_model if needed
+   - Set the source directory to `DL_model`
    - The railway.json file should already be configured with the correct settings
+   - Ensure the working directory is properly set to the DL_model folder
 
 4. **Add Environment Variables (if needed)**
    - `PORT`: 8089 (should already be set in Dockerfile)
@@ -31,22 +31,30 @@ This document provides the steps to deploy the Chest X-ray Classification API to
    - The application will show "healthy" in Railway once it's fully up and running
    - Note that the TensorFlow model might take some time to load initially
 
+## Important Architecture Changes
+
+We've implemented a two-stage startup process to help with Railway deployment:
+
+1. **railway_starter.py**: A lightweight FastAPI application that starts quickly and always responds to health checks
+2. **api_only.py**: The main application that loads the ML model in the background
+
+This approach ensures that Railway's health checks pass while the model is still loading, preventing premature application restarts.
+
 ## Troubleshooting
 
 1. **"Application failed to respond" Error**
-   - This could happen if the health check times out before the model is loaded
-   - The updated code should handle this by returning "healthy" immediately while loading the model in the background
-   - Check the logs to see if there are any specific errors
+   - Check that the deployment is using the correct directory (DL_model)
+   - Verify that railway_starter.py is being used as the start command
+   - The railway.json file should specify `"startCommand": "python railway_starter.py"`
 
 2. **Memory Issues**
-   - TensorFlow can be memory-intensive
-   - We've optimized by using tensorflow-cpu and configuring memory growth
+   - We're using tensorflow-cpu for lower memory usage
    - If memory issues persist, consider upgrading your Railway plan
 
 3. **Model Loading Time**
-   - The model might take a while to load the first time
    - The API endpoints will return a 503 error with a message saying the model is still loading
    - The /health and / endpoints will still respond with a 200 OK status
+   - Check the /model-status endpoint to monitor loading progress
 
 ## Testing Your Deployment
 
@@ -65,6 +73,20 @@ Once deployed, you can test the API using:
 3. Classification (after model is loaded):
    ```
    curl -X POST -F "file=@chest_xray.jpg" https://your-railway-url.railway.app/predict
+   ```
+
+## Local Testing
+
+Before deploying, you can test the API locally:
+
+1. Start the API:
+   ```
+   python railway_starter.py
+   ```
+
+2. In another terminal, run the test script:
+   ```
+   python test_api.py
    ```
 
 ## Integration with Frontend

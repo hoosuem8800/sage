@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install dependencies
@@ -23,7 +24,7 @@ ENV PYTHONUNBUFFERED=1
 COPY Model /app/Model/
 
 # Copy application code
-COPY api_only.py ml_api.py README.md /app/
+COPY api_only.py ml_api.py railway_starter.py README.md /app/
 
 # Set environment variables
 ENV PORT=8089
@@ -35,5 +36,5 @@ EXPOSE 8089
 HEALTHCHECK --interval=5s --timeout=30s --start-period=40s --retries=3 \
   CMD curl -f http://localhost:8089/health || exit 1
 
-# Command to run the API-only version by default
-CMD ["python", "api_only.py"] 
+# Command to run the starter script by default
+CMD ["python", "railway_starter.py"] 

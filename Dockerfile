@@ -22,10 +22,10 @@ COPY Model /app/Model/
 COPY api_only.py ml_api.py app.py README.md /app/
 
 # Set environment variables
-ENV PORT=7860
+ENV PORT=8089
 
 # Expose the port
-EXPOSE 7860
+EXPOSE 8089
 
 # Command to run the API-only version by default
 # (This can be overridden by setting a different CMD in the Space settings)

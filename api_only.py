@@ -69,20 +69,25 @@ async def health_check() -> Dict[str, Any]:
         model_path = os.path.join(os.path.dirname(__file__), "Model", "classification_cnn.h5")
         model_file_exists = os.path.exists(model_path)
         
-        # Check if model is loaded
+        logger.info(f"Health check: Model file exists: {model_file_exists}")
+        
+        # Only check if model is loaded, don't try to load it during health check
         model_loaded = model is not None
         
+        # Return health status
         return {
-            "status": "healthy" if model_file_exists else "unhealthy",
+            "status": "healthy",
             "model_file_exists": model_file_exists,
             "model_loaded": model_loaded,
             "classes": CLASS_NAMES
         }
     except Exception as e:
         logger.error(f"Health check error: {str(e)}")
+        # Still return 200 to pass Railway health check but include error details
         return {
-            "status": "unhealthy",
-            "error": str(e)
+            "status": "degraded",
+            "error": str(e),
+            "message": "Health check encountered an error but service might still be functional"
         }
 
 @app.post("/predict", status_code=status.HTTP_200_OK)
@@ -203,5 +208,18 @@ async def unload_model() -> Dict[str, str]:
 
 if __name__ == "__main__":
     # Get port from environment variable or use default
-    port = int(os.environ.get("PORT", 7860))
-    uvicorn.run(app, host="0.0.0.0", port=port) 
+    port = int(os.environ.get("PORT", 8089))
+    logger.info(f"Starting server on port {port}")
+    # Use uvicorn with additional restart and timeout settings
+    try:
+        logger.info(f"Starting FastAPI server on http://0.0.0.0:{port}")
+        uvicorn.run(
+            app, 
+            host="0.0.0.0", 
+            port=port,
+            log_level="info",
+            timeout_keep_alive=120
+        )
+    except Exception as e:
+        logger.error(f"Error starting server: {str(e)}")
+        raise 

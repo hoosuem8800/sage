@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, HTTPException, status
+from fastapi import FastAPI, UploadFile, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import tensorflow as tf
 import numpy as np
@@ -8,11 +8,26 @@ import logging
 from typing import Dict, Union, Any, List
 import gc
 import uvicorn
+import asyncio
+import threading
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Set TensorFlow to use memory growth to avoid OOM issues
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logger.info(f"Found {len(gpus)} GPU(s), enabled memory growth")
+    except Exception as e:
+        logger.error(f"Error configuring GPUs: {str(e)}")
+else:
+    logger.info("No GPUs found, using CPU mode")
 
 app = FastAPI(title="Chest X-ray Classification API",
              description="API for classifying chest X-rays (Normal, Lung Opacity, Pneumonia)",
@@ -29,28 +44,80 @@ app.add_middleware(
 
 # Global model variable
 model = None
+model_loading = False
+model_load_started = False
+model_ready = False
+start_time = time.time()
 
 # Class names
 CLASS_NAMES = ["Lung_Opacity", "Normal", "Pneumonia"]
 
-def load_model_if_needed():
-    """Load the model if it's not already loaded"""
-    global model
-    if model is None:
+# Define a function to load the model in a separate thread
+def load_model_in_thread():
+    global model, model_loading, model_ready
+    try:
+        logger.info(f"Starting model loading in background thread at {time.time() - start_time:.2f}s after startup")
         model_path = os.path.join(os.path.dirname(__file__), "Model", "classification_cnn.h5")
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        
+            logger.error(f"Model file not found: {model_path}")
+            return
+
         logger.info(f"Loading model from {model_path}")
-        model = tf.keras.models.load_model(model_path)
-        logger.info("Model loaded successfully")
+        loaded_model = tf.keras.models.load_model(model_path)
         
         # Run a warmup prediction
+        logger.info("Running warmup prediction")
         dummy_input = np.zeros((1, 128, 128, 1), dtype=np.float32)
-        model.predict(dummy_input, verbose=0)
-        logger.info("Model warmup complete")
+        loaded_model.predict(dummy_input, verbose=0)
+        
+        # Only set the global model after successful loading
+        model = loaded_model
+        model_ready = True
+        logger.info(f"Model loaded successfully and ready for predictions at {time.time() - start_time:.2f}s after startup")
+    except Exception as e:
+        logger.error(f"Error loading model in background: {str(e)}")
+    finally:
+        model_loading = False
+
+def load_model_if_needed():
+    global model, model_loading, model_load_started, model_ready
+    
+    if model is not None and model_ready:
+        return model
+    
+    if not model_load_started:
+        model_loading = True
+        model_load_started = True
+        threading.Thread(target=load_model_in_thread, daemon=True).start()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model loading has started, please try again in a few seconds"
+        )
+    
+    if model_loading:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model is still loading, please try again in a few seconds"
+        )
+    
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model failed to load, please check logs"
+        )
     
     return model
+
+@app.on_event("startup")
+async def startup_event():
+    global model_loading, model_load_started, start_time
+    logger.info("Application startup: Initializing model loading")
+    # Start model loading in a separate thread to not block the API
+    model_loading = True
+    model_load_started = True
+    start_time = time.time()
+    threading.Thread(target=load_model_in_thread, daemon=True).start()
+    logger.info("Application startup complete, model loading in background")
 
 @app.get("/", status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Union[str, List[str]]]:
@@ -58,40 +125,39 @@ async def root() -> Dict[str, Union[str, List[str]]]:
     return {
         "status": "online", 
         "message": "Chest X-ray Classification API is running", 
+        "model_status": "loaded" if model_ready else "loading",
+        "uptime": f"{time.time() - start_time:.2f}s",
         "classes": CLASS_NAMES
     }
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health_check() -> Dict[str, Any]:
-    """Health check endpoint."""
-    try:
-        # Check if model file exists
-        model_path = os.path.join(os.path.dirname(__file__), "Model", "classification_cnn.h5")
-        model_file_exists = os.path.exists(model_path)
-        
-        logger.info(f"Health check: Model file exists: {model_file_exists}")
-        
-        # Only check if model is loaded, don't try to load it during health check
-        model_loaded = model is not None
-        
-        # Return health status
-        return {
-            "status": "healthy",
-            "model_file_exists": model_file_exists,
-            "model_loaded": model_loaded,
-            "classes": CLASS_NAMES
-        }
-    except Exception as e:
-        logger.error(f"Health check error: {str(e)}")
-        # Still return 200 to pass Railway health check but include error details
-        return {
-            "status": "degraded",
-            "error": str(e),
-            "message": "Health check encountered an error but service might still be functional"
-        }
+    """
+    Simple health check endpoint that doesn't load the model.
+    Railway uses this to verify the application is running.
+    """
+    # Always return healthy to allow the application to fully start
+    return {
+        "status": "healthy",
+        "message": "API is running",
+        "model_status": "loaded" if model_ready else "loading",
+        "uptime": f"{time.time() - start_time:.2f}s"
+    }
+
+@app.get("/model-status", status_code=status.HTTP_200_OK)
+async def model_status() -> Dict[str, Any]:
+    """Get the current status of the model loading process."""
+    global model, model_loading, model_ready, start_time
+    
+    return {
+        "model_loaded": model is not None,
+        "model_loading": model_loading,
+        "model_ready": model_ready,
+        "uptime": f"{time.time() - start_time:.2f}s"
+    }
 
 @app.post("/predict", status_code=status.HTTP_200_OK)
-async def predict(file: UploadFile) -> Dict[str, Any]:
+async def predict(file: UploadFile, background_tasks: BackgroundTasks) -> Dict[str, Any]:
     """
     Process chest X-ray image and classify as Normal, Lung Opacity, or Pneumonia.
     
@@ -113,14 +179,15 @@ async def predict(file: UploadFile) -> Dict[str, Any]:
         )
     
     try:
-        # Load model if not already loaded
-        try:
-            model = load_model_if_needed()
-        except Exception as e:
-            logger.error(f"Failed to load model: {str(e)}")
+        # Check if model is available
+        if not model_ready or model is None:
+            if not model_load_started:
+                # Start loading the model if it hasn't started yet
+                background_tasks.add_task(load_model_if_needed)
+                
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Model not available: {str(e)}"
+                detail="Model is not ready yet, please try again in a few seconds"
             )
         
         # Read and process image
@@ -195,10 +262,11 @@ async def predict(file: UploadFile) -> Dict[str, Any]:
 @app.get("/unload-model", status_code=status.HTTP_200_OK)
 async def unload_model() -> Dict[str, str]:
     """Unload the model from memory"""
-    global model
+    global model, model_ready
     if model is not None:
         del model
         model = None
+        model_ready = False
         # Force garbage collection
         gc.collect()
         logger.info("Model unloaded from memory")

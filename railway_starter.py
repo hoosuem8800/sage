@@ -1,19 +1,21 @@
-from fastapi import FastAPI, status
+from fastapi import FastAPI, status, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import os
 import logging
 import threading
 import time
 import uvicorn
 import sys
+import importlib.util
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Chest X-ray Classification API Starter",
-             description="Railway starter app that loads the main API",
+app = FastAPI(title="Chest X-ray Classification API",
+             description="API for classifying chest X-rays (Normal, Lung Opacity, Pneumonia)",
              version="1.0.0")
 
 # Add CORS middleware
@@ -28,38 +30,23 @@ app.add_middleware(
 # Global variables
 start_time = time.time()
 main_app_ready = False
+model_ready = False
 
-def load_main_app():
-    global main_app_ready
-    logger.info("Starting main application loading...")
-    
-    # Wait a few seconds to let the health check system start
-    time.sleep(3)
-    
-    try:
-        # Import the real app in a separate thread
-        import api_only
-        logger.info("Main app imported, starting model loading...")
-        main_app_ready = True
-    except Exception as e:
-        logger.error(f"Error importing main app: {str(e)}")
-        sys.exit(1)
+# Import the API endpoints directly
+from api_only import root as api_root
+from api_only import health_check as api_health
+from api_only import model_status as api_model_status
+from api_only import predict as api_predict
+from api_only import unload_model as api_unload_model
+from api_only import load_model_in_thread, model, model_ready
 
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Railway starter application initializing")
-    threading.Thread(target=load_main_app, daemon=True).start()
+# Include the endpoints from api_only.py
+app.get("/")(api_root)
+app.get("/model-status")(api_model_status)
+app.post("/predict")(api_predict)
+app.get("/unload-model")(api_unload_model)
 
-@app.get("/", status_code=status.HTTP_200_OK)
-async def root():
-    """Root endpoint for Railway."""
-    return {
-        "status": "online",
-        "message": "Chest X-ray Classification API is starting up",
-        "main_app_ready": main_app_ready,
-        "uptime": f"{time.time() - start_time:.2f}s"
-    }
-
+# Override health check to ensure we always return 200 status
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health_check():
     """
@@ -68,15 +55,38 @@ async def health_check():
     """
     return {
         "status": "healthy",
-        "message": "API is starting up",
-        "main_app_ready": main_app_ready,
+        "message": "API is running",
+        "model_status": "loaded" if model_ready else "loading",
         "uptime": f"{time.time() - start_time:.2f}s"
     }
+
+# Error handler for 503 errors to return 200 to health checks
+@app.middleware("http")
+async def handle_503_errors(request: Request, call_next):
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        logger.error(f"Error handling request: {str(e)}")
+        # Return a JSON response with error details
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)},
+        )
+
+@app.on_event("startup")
+async def startup_event():
+    global main_app_ready
+    logger.info("Application startup: Initializing model loading")
+    # Start model loading in a separate thread to not block the API
+    threading.Thread(target=load_model_in_thread, daemon=True).start()
+    main_app_ready = True
+    logger.info("Application startup complete, model loading in background")
 
 if __name__ == "__main__":
     # Get port from environment variable or use default
     port = int(os.environ.get("PORT", 8089))
-    logger.info(f"Starting Railway starter server on port {port}")
+    logger.info(f"Starting server on port {port}")
     
     try:
         logger.info(f"Starting FastAPI server on http://0.0.0.0:{port}")

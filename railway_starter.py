@@ -46,6 +46,19 @@ app.get("/model-status")(api_model_status)
 app.post("/predict")(api_predict)
 app.get("/unload-model")(api_unload_model)
 
+# Add a GET handler for /predict to provide better error messages
+@app.get("/predict")
+async def predict_get_handler():
+    """Helper endpoint to explain that /predict requires POST method"""
+    return JSONResponse(
+        status_code=405,
+        content={
+            "detail": "Method Not Allowed. The /predict endpoint requires a POST request with an X-ray image file.",
+            "usage": "Send a POST request with Content-Type: multipart/form-data and include a 'file' field containing your chest X-ray image.",
+            "example": "curl -X POST -F 'file=@chest_xray.jpg' https://this-api-url.com/predict"
+        }
+    )
+
 # Override health check to ensure we always return 200 status
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health_check():

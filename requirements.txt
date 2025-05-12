@@ -1,0 +1,8 @@
+tensorflow==2.12.0
+numpy>=1.20.0
+opencv-python-headless>=4.5.0
+gradio>=4.19.0
+fastapi>=0.98.0
+pillow>=9.0.0
+uvicorn>=0.20.0
+python-multipart>=0.0.5 
